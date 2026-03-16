@@ -1,0 +1,66 @@
+# =============================================================================
+# basic-workflow.yml - Simple CI Workflow Using Self-Hosted Runner
+# =============================================================================
+# This workflow demonstrates a basic CI pipeline running on a self-hosted runner.
+# It checks out code, sets up Python, installs dependencies, and runs tests.
+#
+# Prerequisites:
+#   - A self-hosted runner registered with labels matching runs-on
+#   - Python 3 installed on the runner (via install-dependencies script)
+#
+# To use this workflow:
+#   1. Copy this file to your repo at .github/workflows/basic-workflow.yml
+#   2. Adjust the runs-on labels to match your runner's labels
+#   3. Adjust the build/test steps for your project
+# =============================================================================
+
+name: Basic CI (Self-Hosted)
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    # Use self-hosted runner with custom labels
+    # The runner must have these labels assigned during setup
+    runs-on: [self-hosted, linux]
+
+    steps:
+      # Step 1: Check out the repository code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Python (uses the version installed on the runner)
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Step 3: Install project dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Step 4: Run linting
+      - name: Run linter
+        run: |
+          pip install flake8
+          flake8 . --count --show-source --statistics
+
+      # Step 5: Run tests
+      - name: Run tests
+        run: |
+          pip install pytest
+          pytest --verbose
+
+      # Step 6: Display runner info (useful for debugging)
+      - name: Runner info
+        run: |
+          echo "Runner Name: ${{ runner.name }}"
+          echo "Runner OS: ${{ runner.os }}"
+          echo "Runner Arch: ${{ runner.arch }}"
+          echo "Workspace: ${{ github.workspace }}"

@@ -1,0 +1,104 @@
+# =============================================================================
+# matrix-workflow.yml - Multi-OS Matrix Build on Self-Hosted Runners
+# =============================================================================
+# This workflow demonstrates running CI jobs across multiple self-hosted runners
+# with different OS labels using a matrix strategy.
+#
+# Prerequisites:
+#   - Self-hosted runners registered with OS-specific labels:
+#     - [self-hosted, linux] for Linux runners
+#     - [self-hosted, windows] for Windows runners
+#
+# To use this workflow:
+#   1. Copy this file to your repo at .github/workflows/matrix-workflow.yml
+#   2. Ensure you have runners with matching labels for each OS
+#   3. Adjust build/test commands per your project
+# =============================================================================
+
+name: Multi-OS CI (Self-Hosted Matrix)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    # Matrix strategy: run the job on multiple OS runners in parallel
+    strategy:
+      fail-fast: false   # Don't cancel other OS jobs if one fails
+      matrix:
+        os:
+          - label: [self-hosted, linux]
+            name: Linux
+            shell: bash
+          - label: [self-hosted, windows]
+            name: Windows
+            shell: pwsh
+
+    name: Build (${{ matrix.os.name }})
+    runs-on: ${{ matrix.os.label }}
+
+    defaults:
+      run:
+        shell: ${{ matrix.os.shell }}
+
+    steps:
+      # Step 1: Checkout code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 2: Display environment info
+      - name: Environment info
+        run: |
+          echo "Runner: ${{ runner.name }}"
+          echo "OS: ${{ runner.os }}"
+          echo "Arch: ${{ runner.arch }}"
+
+      # Step 3: Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Step 4: Install dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Step 5: Run tests
+      - name: Run tests
+        run: |
+          pip install pytest
+          pytest --verbose --junitxml=test-results-${{ matrix.os.name }}.xml
+
+      # Step 6: Upload test results as artifact
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-${{ matrix.os.name }}
+          path: test-results-${{ matrix.os.name }}.xml
+
+  # Summary job that runs after all matrix jobs complete
+  summary:
+    needs: build
+    runs-on: [self-hosted, linux]
+    if: always()
+
+    steps:
+      - name: Download all test results
+        uses: actions/download-artifact@v4
+        with:
+          path: test-results
+
+      - name: Report status
+        run: |
+          echo "============================================="
+          echo "  Multi-OS Build Summary"
+          echo "============================================="
+          echo "Build result: ${{ needs.build.result }}"
+          ls -la test-results/ || true
+          echo "============================================="

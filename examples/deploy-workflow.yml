@@ -1,0 +1,186 @@
+# =============================================================================
+# deploy-workflow.yml - Terraform Deploy Workflow on Self-Hosted Runner
+# =============================================================================
+# This workflow demonstrates infrastructure deployment using Terraform on a
+# self-hosted runner. It includes plan, manual approval, and apply stages.
+#
+# Prerequisites:
+#   - A self-hosted runner with Terraform installed (via install-dependencies)
+#   - Cloud provider credentials configured (AWS/Azure env vars or profiles)
+#   - A GitHub Environment named "production" with required reviewers
+#
+# To use this workflow:
+#   1. Copy to .github/workflows/deploy-workflow.yml
+#   2. Set up cloud credentials as GitHub Secrets
+#   3. Create a "production" environment with protection rules in repo settings
+#   4. Adjust Terraform directory and variable paths
+# =============================================================================
+
+name: Terraform Deploy (Self-Hosted)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform/**"    # Only trigger on Terraform file changes
+  workflow_dispatch:       # Allow manual trigger from GitHub UI
+    inputs:
+      action:
+        description: "Terraform action to perform"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+# Prevent concurrent deployments
+concurrency:
+  group: terraform-deploy
+  cancel-in-progress: false
+
+jobs:
+  # ==========================================================================
+  # Stage 1: Terraform Plan
+  # ==========================================================================
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: [self-hosted, linux]
+
+    # Make the plan output available to the apply job
+    outputs:
+      plan-exitcode: ${{ steps.plan.outputs.exitcode }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Terraform Init
+        working-directory: ./terraform
+        run: |
+          terraform init -input=false
+          echo "Terraform initialized successfully"
+
+      - name: Terraform Validate
+        working-directory: ./terraform
+        run: |
+          terraform validate
+          echo "Terraform configuration is valid"
+
+      - name: Terraform Plan
+        id: plan
+        working-directory: ./terraform
+        run: |
+          # Run plan and capture exit code
+          # Exit code 0 = no changes, 2 = changes present
+          set +e
+          terraform plan -input=false -detailed-exitcode -out=tfplan
+          EXITCODE=$?
+          set -e
+
+          echo "exitcode=$EXITCODE" >> $GITHUB_OUTPUT
+
+          if [ $EXITCODE -eq 0 ]; then
+            echo "No infrastructure changes detected."
+          elif [ $EXITCODE -eq 2 ]; then
+            echo "Infrastructure changes detected. Review the plan above."
+          else
+            echo "Terraform plan failed!"
+            exit 1
+          fi
+
+      - name: Upload Plan
+        uses: actions/upload-artifact@v4
+        if: steps.plan.outputs.exitcode == '2'
+        with:
+          name: terraform-plan
+          path: terraform/tfplan
+          retention-days: 5
+
+      - name: Runner diagnostics
+        if: failure()
+        run: |
+          echo "=== Runner Info ==="
+          echo "Runner: ${{ runner.name }}"
+          echo "OS: ${{ runner.os }}"
+          terraform version
+          echo "=== Disk Space ==="
+          df -h .
+
+  # ==========================================================================
+  # Stage 2: Terraform Apply (requires approval)
+  # ==========================================================================
+  terraform-apply:
+    name: Terraform Apply
+    needs: terraform-plan
+    runs-on: [self-hosted, linux]
+
+    # Only run if there are changes to apply
+    if: |
+      needs.terraform-plan.outputs.plan-exitcode == '2' &&
+      (github.event_name == 'push' || github.event.inputs.action == 'apply')
+
+    # Requires manual approval via GitHub Environment protection rules
+    environment:
+      name: production
+      url: ${{ steps.apply.outputs.url }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan
+          path: terraform/
+
+      - name: Terraform Init
+        working-directory: ./terraform
+        run: terraform init -input=false
+
+      - name: Terraform Apply
+        id: apply
+        working-directory: ./terraform
+        run: |
+          terraform apply -input=false -auto-approve tfplan
+          echo "Terraform apply completed successfully!"
+
+          # Example: capture an output URL
+          # echo "url=$(terraform output -raw app_url)" >> $GITHUB_OUTPUT
+
+      - name: Post-apply validation
+        working-directory: ./terraform
+        run: |
+          echo "=== Terraform State Summary ==="
+          terraform show -no-color | head -50
+          echo "=== Output Values ==="
+          terraform output -no-color || echo "No outputs defined"
+
+  # ==========================================================================
+  # Stage 3: Terraform Destroy (manual trigger only)
+  # ==========================================================================
+  terraform-destroy:
+    name: Terraform Destroy
+    runs-on: [self-hosted, linux]
+
+    if: github.event.inputs.action == 'destroy'
+
+    environment:
+      name: production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Terraform Init
+        working-directory: ./terraform
+        run: terraform init -input=false
+
+      - name: Terraform Destroy
+        working-directory: ./terraform
+        run: |
+          echo "WARNING: Destroying all infrastructure!"
+          terraform destroy -input=false -auto-approve
+          echo "Infrastructure destroyed."
